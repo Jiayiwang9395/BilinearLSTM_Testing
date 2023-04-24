@@ -19,15 +19,15 @@ class Encoder(nn.Module):
         self.relu = nn.ReLU()
 
         """TO ADD FC layer to Encoder init for classification"""
-        self.fc1 = nn.Linear(128,16)
+        self.fc1 = nn.Linear(hidden_size, 16)
         self.fc2 = nn.Linear(16, 16)
         self.fc3 = nn.Linear(16, 1)
         self.dropout = nn.Dropout(0.3)
 
 
-    def forward(self, x):
+    def forward(self, x,hidden):
         # out: tensor of shape (batch_size, seq_length, hidden_size)
-        outputs, (hidden, cell) = self.lstm(x)
+        outputs, hidden = self.lstm(x,hidden)
         """NEED TO ADD TO FORWARD PASS THROUGH FC LAYERS HERE"""
         outputs = torch.relu(self.fc1(outputs))
         outputs = self.dropout(outputs)
@@ -36,53 +36,37 @@ class Encoder(nn.Module):
         outputs = torch.sigmoid(self.fc3(outputs))
         return outputs, hidden
 
-
-# class Decoder(nn.Module):
-#
-#     def __init__(self, input_size=4096, hidden_size=1024, output_size=4096, num_layers=2):
-#         super(Decoder, self).__init__()
-#         self.hidden_size = hidden_size
-#         self.output_size = output_size
-#         self.num_layers = num_layers
-#
-#         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True,
-#                             dropout=0.1, bidirectional=False)
-#
-#         self.relu = nn.ReLU()
-#         self.fc = nn.Linear(hidden_size, output_size)
-#
-#
-#     def forward(self, x, hidden):
-#         # out: tensor of shape (batch_size, seq_length, hidden_size)
-#         output, (hidden, cell) = self.lstm(x, hidden)
-#         prediction = self.fc(output)
-#
-#         return prediction, (hidden, cell)
-
-
 class Seq2Seq(nn.Module):
     def __init__(self, args):
         super().__init__()
-
-        hidden_size = args.hidden_size
-        input_size = args.input_size
-        output_size = args.output_size
-        num_layers = args.num_layers
-
+        self.args = args
         self.encoder = Encoder(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
+            input_size=args.input_size,
+            hidden_size=args.hidden_size,
+            num_layers=args.num_layers,
         )
+
+
         self.criterion = nn.MSELoss()
+        # self.bce_crit = nn.BCELoss()
+
+    # def forward(self, src, trg):
     def forward(self, src,trg):
 
         batch_size, sequence_length, img_size = src.size()
-        encoder_hidden = self.encoder(src)
-        output,_hidden = encoder_hidden
+        print("batch_size {}".format(batch_size))
+        hidden = (torch.zeros(self.args.num_layers, batch_size, self.args.hidden_size),torch.zeros(self.args.num_layers, batch_size, self.args.hidden_size))
+        #hidden = (torch.zeros(batch_size,sequence_length,self.args.hidden_size),torch.zeros(batch_size,sequence_length,self.args.hidden_size))
+        hidden = tuple(tensor.to(self.args.device) for tensor in hidden)
+        encoder_hidden = self.encoder(src,hidden)
+        tem_output,_hidden = encoder_hidden
+        #print("trg = {}".format(trg))
+        print("trg shape {}".format(trg.shape))
+        print("trg is {}".format(trg))
         trg = trg.float()
-        #inv_idx = torch.arange(sequence_length - 1, -1, -1).long()
-        output = torch.mean(output,axis = 1)
-        output = torch.squeeze(output)
+        output = tem_output[:,-1,:]
+        output = output.squeeze()
+        print("output shape {}".format(output.shape))
+        print("output is {}".format(output))
         loss = self.criterion(output, trg)
-        return loss
+        return loss,output

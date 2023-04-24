@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 from torch import Tensor
-from torchsummary import summary
+#from torchsummary import summary
 import torch.utils.data as data
 
 import torchvision
@@ -50,12 +50,15 @@ from video_dataset import VideoFrameDataset, ImglistToTensor
 from video_dataset import plot_video, denormalize
 
 #from audio_dataset import AudioDataset, spec_to_image
-from auto_encoder_custom import Seq2Seq
+from auto_encoder_custom_v1 import Seq2Seq
 
 import pandas as pd
 import numpy as np
 
-from torchsummary import summary
+
+from torchvision.models import resnet18, ResNet18_Weights
+
+#from torchsummary import summary
 
 """# seed and cuda setup"""
 torch.cuda.empty_cache()
@@ -95,9 +98,9 @@ def main():
 
 
 
-    annotation_file_vd_train = "{0}{1}/fold{2}_bodytrain.txt".format(videos_root, modality, fold)
-    annotation_file_vd_valid = "{0}{1}/fold{2}_bodytrain.txt".format(videos_root, modality, fold)
-    annotation_file_vd_test  = "{0}{1}/fold{2}_bodytest.txt".format(videos_root, modality, fold)
+    annotation_file_vd_train = "{0}{1}/reduceV/fold{2}_bodytrain.txt".format(videos_root, modality, fold)
+    annotation_file_vd_valid = "{0}{1}/reduceV/fold{2}_bodytrain.txt".format(videos_root, modality, fold)
+    annotation_file_vd_test  = "{0}{1}/reduceV/fold{2}_bodytest.txt".format(videos_root, modality, fold)
 
     print(annotation_file_vd_train)
     print(annotation_file_vd_test)
@@ -204,7 +207,8 @@ def main():
     dataloader_vd_test  = torch.utils.data.DataLoader(dataset=dataset_vd_test, batch_size=batch_size_test, shuffle=False,
                                                      num_workers=0, pin_memory=True, drop_last=False)
     ## import model
-    rn18 = models.resnet18(pretrained=True)
+    weights = ResNet18_Weights.DEFAULT
+    rn18 = models.resnet18(weights = weights)
 
     ## check layers
     children_counter = 0
@@ -213,7 +217,8 @@ def main():
         children_counter+=1
 
     # Load the pretrained model
-    model_df = models.resnet18(pretrained=True)
+    weights = ResNet18_Weights.DEFAULT
+    model_df = models.resnet18(weights = weights)
 
     # Use the model object to select the desired layer
     layer = model_df._modules.get('avgpool')
@@ -231,8 +236,8 @@ def main():
         "hidden_size": 128, ## Hidden dimension setting
         "output_size": 512, ## output dimension setting
         "num_layers": 2,     ## number of LSTM layer
-        "learning_rate" : 0.001, ## learning rate setting
-        "max_iter" :30, ## max iteration setting
+        "learning_rate" : 0.01, ## learning rate setting
+        "max_iter" :10, ## max iteration setting
     })
 
 
@@ -243,19 +248,12 @@ def main():
 
     # optimizer Setting
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor = 0.1, patience = 3, verbose = True)
     if train:
-        model = run(args, model, dataloader_vd_train, dataloader_vd_valid, model_df, optimizer, layer, fold, modality)
-    # else:
-    #     get_features('train',model, optimizer, args, dataloader_vd_train,layer,model_df,modality, fold)
-    #     get_features('test',model, optimizer, args, dataloader_vd_test,layer,model_df,modality, fold)
-    #     get_features('valid',model, optimizer, args, dataloader_vd_valid,layer,model_df,modality, fold)
-
-
-# def get_features(type, model, optimizer, args, Dataset,layer,model_df,modality, fold):
-#     parent_save_path_input = '/data/jiayiwang/Neonate_Pain_Assessment/Neonate_Pain_Classification_v1.0/saved' # checkpoint
-#     parent_save_path       = '/data/jiayiwang/Neonate_Pain_Assessment/Neonate_Pain_Classification_v1.0/stage1_latent_features/' + modality +'/'+type + '/'
-#     model_path = parent_save_path_input + '/best-model/'+ fold + '-' + modality +'-resnet18-best-model-epoch-000-loss-0.00.pth'
-#     features(model_path, model, optimizer, args, Dataset,parent_save_path,layer,model_df,modality, fold,type)
+        model = run(args, model, dataloader_vd_train, dataloader_vd_valid, model_df, optimizer, layer, fold, modality,scheduler)
+    else:
+        model_path = videos_root_post +'/saved/reduceV/best-model/'+ fold + '-' + modality +'-resnet18-best-model-epoch-000-loss-0.32.pth'
+        test(model_path, model, optimizer, args, dataloader_vd_test, layer,model_df,modality,fold,type)
 
 def get_vector(image_name, layer, model_df): # image input
     img = image_name  # direct value load
@@ -312,7 +310,7 @@ def load_ckp(checkpoint_fpath, model, optimizer):
     valid_loss_min = checkpoint['valid_loss_min']
     return model, optimizer, checkpoint['epoch'], valid_loss_min
 
-def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold, modality):
+def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold, modality,scheduler):
 
     # checkpoint initialization
     valid_loss_min = np.Inf
@@ -323,8 +321,12 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
     count = 0
     epoch_train_loss = []
     epoch_valid_loss = []
+    learning_rate = []
     for epoch in epochs:
         print('epoch = {0} at time {1}'.format(epoch, time.ctime()))
+        # for param in model.parameters():
+        #     print("param.data is ")
+        #     print(param.data)
         print('----------------------------------------------------------------------------------------------------------------')
 
         ## train
@@ -346,8 +348,8 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
             past_data = past_data.to(args.device)
             label = label.to(args.device)
             print("past_data.shape is {}".format(past_data.shape))
-
-            reconstruct_loss = model(past_data,label)
+            model(past_data,label)
+            reconstruct_loss,prediction = model(past_data,label)
             ## Composite Loss
             loss = reconstruct_loss
             train_loss += loss.mean().item()
@@ -360,8 +362,10 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
             })
         train_loss = train_loss / len(train_loader)
         epoch_train_loss.append(train_loss)
+        scheduler.step(train_loss)
+        learning_rate.append(optimizer.param_groups[0]["lr"])
         print("Train Score : [{}]".format(train_loss))
-
+        print("Traing learning rate is {}".format(optimizer.param_groups[0]["lr"]))
         ## test
         print('validation starts.....................')
         model.eval()
@@ -379,7 +383,7 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
 
                 past_data = past_data.to(args.device)
                 label = label.to(args.device)
-                reconstruct_loss = model(past_data,label)
+                reconstruct_loss,prediction = model(past_data,label)
 
                 ## Composite Loss
                 loss = reconstruct_loss
@@ -394,7 +398,6 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
         epoch_valid_loss.append(eval_loss)
         print("Evaluation Score : [{}]".format(eval_loss))
 
-
         print('Epoch: {} \tTraining Loss: {:.6f} \tValidation Loss: {:.6f}'.format(epoch, train_loss, eval_loss))
 
         # create checkpoint variable and add important data. helps to resume the training after pause
@@ -407,7 +410,7 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
 
 
         ## checkpoint dynamic saving filename
-        parent_save_path ="/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved"
+        parent_save_path ="/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v1"
         experiment_type = '-resnet18'
         checkpoint_path = parent_save_path + '/checkpoint/'+ fold + '-'+ modality + experiment_type +'-last-checkpoint.pth'
         best_model_path = parent_save_path + '/best-model/'+ fold + '-'+ modality + experiment_type +'-best-model' \
@@ -415,7 +418,7 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
                           +'.pth'
         print('Current time is {0}'.format(time.ctime()))
         ## save checkpoint
-        save_ckp(checkpoint, False, checkpoint_path, best_model_path)
+        #save_ckp(checkpoint, False, checkpoint_path, best_model_path)
 
         if eval_loss <= valid_loss_min:
             print('Validation loss decreased ({:.6f} --> {:.6f}).  Saving model ...'.format(valid_loss_min, eval_loss))
@@ -423,18 +426,21 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
             save_ckp(checkpoint, True, checkpoint_path, best_model_path)
             valid_loss_min = eval_loss
     #save train_loss and valid_loss into csv file
-    main_path = "/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved"
+    main_path = "/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v1/"
     pic_save = main_path + '{0}_loss.png'.format(modality)
     final_loss = pd.DataFrame({'train_loss':epoch_train_loss, 'valid_loss':epoch_valid_loss})
     loss_save_path = main_path + '/' + modality + '-' + fold + '-' + 'final_loss.csv'
+    lr = pd.DataFrame({'learningRate':learning_rate})
+    lr_save_path = main_path + '/' + modality + '-' + fold + '-' + 'learningrate.csv'
     final_loss.to_csv(loss_save_path)
+    lr.to_csv(lr_save_path)
     #plot train_loss and valid_loss
     plt.clf()
     plt.plot(epoch_train_loss, color = 'blue',label = 'train_loss')
     plt.plot(epoch_valid_loss, color = 'red',label = 'valid_loss')
     plt.ylabel(' Loss')
     plt.xlabel('Epochs')
-    plt.xticks(range(0,30),range(1,31))
+    plt.xticks(range(0,9),range(1,10))
     plt.text(0.8, 1.1, 'Train_Loss', color='blue', transform=plt.gca().transAxes)
     plt.text(0.8, 1.05, 'Valid_Loss', color='red', transform=plt.gca().transAxes)
     plt.savefig(main_path + '/'+'{0}_loss.png'.format(modality))
@@ -443,121 +449,23 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
 
 
 
-# def features(model_path, model, optimizer, args, dataloader_vd_test,parent_save_path, layer,model_df,modality,fold,type):
-#     model, optimizer, last_epoch, valid_loss_min = load_ckp(model_path, model, optimizer)
-#     print("optimizer = ", optimizer)
-#     print("last_epoch = ", last_epoch)
-#     print("valid_loss_min = ", valid_loss_min)
-#     latent_z_feat = []
-#     total_paths = []
-#     test_iterator = tqdm(enumerate(dataloader_vd_test), total=len(dataloader_vd_test), desc="test") # checkpoint
-#     with torch.no_grad():
-#         for i, batch_data in test_iterator:
-#             _path, dataV, label = batch_data
-#
-#             print('Enter batch loader')
-#             print(dataV.shape)
-#
-#             print("current path is {}".format(_path))
-#
-#             #past_data = get_vector_vd(dataV)
-#             past_data = get_vector_vd(dataV,layer,model_df)
-#             past_data = past_data.to(args.device)
-#             outputs = model.reconstruct_z(past_data)
-#
-#             print(outputs[0].shape)
-#             print(outputs[1].shape)
-#
-#             out1 = torch.squeeze(outputs[0])
-#             latent_z = out1[-1]
-#             total_paths.append(_path)
-#             latent_z_feat.append(latent_z)
-#
-#         # even though latent_z_feat is a list and not a tensor, it may contain elements that are tensors with CUDA device type. To avoid this error, you can iterate over the elements of latent_z_feat and move any tensors with CUDA device type to the CPU memory using Tensor.cpu() before creating the pd.DataFrame. Here's an example:
-#         #transfer if there are tensor values, transfer it to cpu
-#         for i,item in enumerate(latent_z_feat):
-#              if isinstance(item, torch.Tensor) and item.device.type == 'cuda':
-#                  latent_z_feat[i] = item.cpu()
-#
-#
-#
-#         path_feature = pd.DataFrame({'path':total_paths, 'latent_z_feat':latent_z_feat})
-#         filename_saved = parent_save_path + '/'+type + '-' + fold +'-' + modality+ '-' + 'latent-z-feat-resnet18-imagenet-512.csv'
-#         path_feature.to_csv(filename_saved)
-
-
-
-
-
-
-
-# def test_fun(model_path, model, optimizer, args, dataloader_vd_test,parent_save_path, layer,model_df,modality,fold):
-#     model, optimizer, last_epoch, valid_loss_min = load_ckp(model_path, model, optimizer)
-#     print("optimizer = ", optimizer)
-#     print("last_epoch = ", last_epoch)
-#     print("valid_loss_min = ", valid_loss_min)
-#     latent_z_feat = []
-#     total_paths = []
-#     test_iterator = tqdm(enumerate(dataloader_vd_test), total=len(dataloader_vd_test), desc="test") # checkpoint
-#     path_feature = pd.DataFrame(columns = ["path","latent_z_feat"])
-#     counter = 0;
-#
-#     with torch.no_grad():
-#         for i, batch_data in test_iterator:
-#             _path, dataV, label = batch_data
-#
-#             print('Enter batch loader')
-#             print(dataV.shape)
-#
-#             print("current path is {}".format(_path))
-#
-#             #past_data = get_vector_vd(dataV)
-#             past_data = get_vector_vd(dataV,layer,model_df)
-#             past_data = past_data.to(args.device)
-#             outputs = model.reconstruct_z(past_data)
-#
-#             print(outputs[0].shape)
-#             print(outputs[1].shape)
-#
-#             out1 = torch.squeeze(outputs[0])
-#             latent_z = out1[-1]
-#             latent_z = latent_z
-#             _path = _path
-#             # path_feature.loc[counter] =[_path,latent_z]
-#             # counter += 1
-#             # print(latent_z.shape)
-#             # print("path is {}".format(_path))
-#
-#             # ************************** works file*************************************#
-#             total_paths.append(_path)
-#             latent_z_feat.append(latent_z)
-#             # ************************** works file*************************************#
-#
-#         ##Saving the model
-#         #parent_save_path       = '/home/salekin/Documents/data/dataset-USF-MNPAD-II/save-file'
-#         ## saving features
-#         # even though latent_z_feat is a list and not a tensor, it may contain elements that are tensors with CUDA device type. To avoid this error, you can iterate over the elements of latent_z_feat and move any tensors with CUDA device type to the CPU memory using Tensor.cpu() before creating the pd.DataFrame. Here's an example:
-#         #transfer if there are tensor values, transfer it to cpu
-#         for i,item in enumerate(latent_z_feat):
-#              if isinstance(item, torch.Tensor) and item.device.type == 'cuda':
-#                  latent_z_feat[i] = item.cpu()
-#
-#
-#
-#         path_feature = pd.DataFrame({'path':total_paths, 'latent_z_feat':latent_z_feat})
-#
-#         # ************************** works file*************************************#
-#         filename_saved = parent_save_path + '/'+ fold +'-' + modality+ '-' + 'latent-z-feat-resnet18-imagenet-512.txt'
-#         # with open(filename_saved, 'w') as file:
-#         #     for item1, item2 in zip(total_paths, latent_z_feat):
-#         #         file.write(f"{item1} {item2}\n")
-#         # ************************** works file*************************************#
-#
-#         # latent_file_save = parent_save_path + '/' + fold + '-' + modality + '-' + 'test-latent.txt'
-#         # path_file_save = parent_save_path + '/' + fold + '-' + modality + '-' + 'test-path.txt'
-#         np.savetxt(filename_saved, path_feature.values, fmt='%s') # saving txt file
-#         # np.savetxt(latent_file_save, df_z_feat.values, fmt='%f')
-#         # np.savetxt(path_file_save, df_path.values, fmt='%s')
+def test(model_path, model, optimizer, args, dataloader_vd_test, layer,model_df,modality,fold,type):
+    model, optimizer, last_epoch, valid_loss_min = load_ckp(model_path, model, optimizer)
+    print("optimizer = ", optimizer)
+    print("last_epoch = ", last_epoch)
+    print("valid_loss_min = ", valid_loss_min)
+    test_iterator = tqdm(enumerate(dataloader_vd_test), total=len(dataloader_vd_test), desc="test") # checkpoint
+    with torch.no_grad():
+        for i, batch_data in test_iterator:
+            _path, dataV, label = batch_data
+            print('Enter batch loader')
+            print(dataV.shape)
+            #past_data = get_vector_vd(dataV)
+            past_data = get_vector_vd(dataV,layer,model_df)
+            past_data = past_data.to(args.device)
+            label = label.to(args.device)
+            loss, prediction = model(past_data,label)
+            print("prediction is {}".format(prediction))
 
 
 
@@ -568,61 +476,3 @@ if __name__ == '__main__':
 #%%
 
 """# model test"""
-#
-# ## testing model
-# from tqdm import tqdm # for python file
-# import torch
-#
-# parent_save_path_input = '/home/salekin/Documents/data/dataset-USF-MNPAD-II/save-file' # checkpoint
-# parent_save_path       = '/home/salekin/Documents/data/dataset-USF-MNPAD-II/save-file'
-#
-# model_path = parent_save_path_input + '/best-model/'+ kFold_number +'-body-resnet18-best-model-epoch-004-loss-0.00.pth'
-#
-#
-# # load the saved checkpoint
-# model, optimizer, last_epoch, valid_loss_min = load_ckp(model_path, model, optimizer)
-# # print("model = ", model)
-# print("optimizer = ", optimizer)
-# print("last_epoch = ", last_epoch)
-# print("valid_loss_min = ", valid_loss_min)
-#
-#
-# latent_z_feat = []
-# test_iterator = tqdm(enumerate(dataloader_vd_test), total=len(dataloader_vd_test), desc="test") # checkpoint
-
-
-
-# with torch.no_grad():
-#     for i, batch_data in test_iterator:
-#         _, dataV, (label1,label2,label3,label4,label5,label6,label7) = batch_data # Intensity-CBFEV-PainLabel # checkpoint
-#
-#         print('enter batch loader')
-#         print(dataV.shape)
-#
-#
-#         ## deep features
-#         past_data = get_vector_vd(dataV) # checkpoint
-#
-#         past_data = past_data.to(args.device)
-#
-#         outputs = model.reconstruct_z(past_data) # outputs = (h_n, c_n)
-#
-#
-#         print(outputs[0].shape)
-#         print(outputs[1].shape)
-#
-#         out1 = torch.squeeze(outputs[0])
-#         latent_z = out1[-1]
-#         print(latent_z.shape)
-#         latent_z_feat.append(latent_z)
-#
-    ###Saving the model
-    #parent_save_path       = '/home/salekin/Documents/data/dataset-USF-MNPAD-II/save-file'
-    # ## saving features
-    # import pandas as pd
-    # import numpy as np
-    #
-    # df_z_feat = pd.DataFrame(latent_z_feat)
-    #
-    # filename_saved = parent_save_path + '/'+ kFold_number+'-body-latent-z-feat-resnet18-imagenet-512.txt'
-    # np.savetxt(filename_saved, df_z_feat.values, fmt='%f') # saving txt file
