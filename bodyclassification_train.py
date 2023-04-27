@@ -50,6 +50,9 @@ import pandas as pd
 import numpy as np
 
 from torchvision.models import resnet18, ResNet18_Weights
+
+from sklearn.metrics import recall_score, f1_score
+
 """# seed and cuda setup"""
 torch.cuda.empty_cache()
 
@@ -77,6 +80,7 @@ class LSTMClassfier(nn.Module):
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True,
                             dropout=0.1, bidirectional=False)
         self.relu = nn.ReLU()
+        self.tanh = .nn.functional.tanh()
         self.fc1 = nn.Linear(hidden_size, 16)
         self.fc2 = nn.Linear(16, 16)
         self.fc3 = nn.Linear(16, 1)
@@ -84,10 +88,11 @@ class LSTMClassfier(nn.Module):
 
     def forward(self,x,hidden):
         outputs, hidden = self.lstm(x,hidden)
-        outputs = self.relu(outputs)
         outputs = torch.relu(self.fc1(outputs))
         outputs = self.dropout(outputs)
-        outputs = torch.relu(self.fc2(outputs))
+        outputs = self.fc2(outputs)
+        #outputs = torch.relu(self.fc2(outputs))
+        outputs = self.tanh(outputs)
         outputs = self.dropout(outputs)
         outputs = torch.sigmoid(self.fc3(outputs))
         return outputs, hidden
@@ -139,7 +144,7 @@ def load_ckp(checkpoint_fpath, model, optimizer):
     model.load_state_dict(checkpoint['state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer'])
     valid_loss_min = checkpoint['valid_loss_min']
-    return model, optimizer, checkpoint['epoch'],
+    return model, optimizer, checkpoint['epoch'],valid_loss_min
 
 def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold, modality,scheduler,criterion):
 
@@ -153,8 +158,26 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
     epoch_train_loss = []
     epoch_valid_loss = []
     learning_rate = []
+    # print("Weights before training:")
+    # print("________lstm_________")
+    # print(model.lstm.weight)
+    # print("________fc1_________")
+    # print(model.fc1.weight)
+    # print("________fc2_________")
+    # print(model.fc2.weight)
+    # print("________fc3_________")
+    # print(model.fc3.weight)
     for epoch in epochs:
         print('epoch = {0} at time {1}'.format(epoch, time.ctime()))
+        print("Weights before training:")
+        print("________lstm_________")
+        print(model.lstm.weight_ih_l0)
+        print("________fc1_________")
+        print(model.fc1.weight)
+        print("________fc2_________")
+        print(model.fc2.weight)
+        print("________fc3_________")
+        print(model.fc3.weight)
         # for param in model.parameters():
         #     print("param.data is ")
         #     print(param.data)
@@ -259,7 +282,7 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
 
 
         ## checkpoint dynamic saving filename
-        parent_save_path ="/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v7"
+        parent_save_path ="/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v8"
         experiment_type = '-resnet18'
         checkpoint_path = parent_save_path + '/checkpoint/'+ fold + '-'+ modality + experiment_type +'-last-checkpoint.pth'
         best_model_path = parent_save_path + '/best-model/'+ fold + '-'+ modality + experiment_type +'-best-model' \
@@ -275,7 +298,7 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
             save_ckp(checkpoint, True, checkpoint_path, best_model_path)
             valid_loss_min = eval_loss
     #save train_loss and valid_loss into csv file
-    main_path = "/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v7/"
+    main_path = "/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v8/"
     pic_save = main_path + '{0}_loss.png'.format(modality)
     final_loss = pd.DataFrame({'train_loss':epoch_train_loss, 'valid_loss':epoch_valid_loss})
     loss_save_path = main_path + '/' + modality + '-' + fold + '-' + 'final_loss.csv'
@@ -295,6 +318,63 @@ def run(args, model, train_loader, test_loader, model_df, optimizer, layer, fold
     plt.savefig(main_path + '/'+'{0}_loss.png'.format(modality))
 
     return model
+def test(model_path, model, optimizer, args, dataloader_vd_test, layer,model_df,modality,fold):
+    model, optimizer, last_epoch, valid_loss_min = load_ckp(model_path, model, optimizer)
+    model.eval()
+    print("optimizer = ", optimizer)
+    print("last_epoch = ", last_epoch)
+    print("valid_loss_min = ", valid_loss_min)
+    test_iterator = tqdm(enumerate(dataloader_vd_test), total=len(dataloader_vd_test), desc="test") # checkpoint
+    prediction = []
+    trg = []
+    wrg_prediction = 0
+    cor_prediction = 0
+    with torch.no_grad():
+        for i, batch_data in test_iterator:
+            _path, dataV, label = batch_data
+            #past_data = get_vector_vd(dataV)
+            past_data = get_vector_vd(dataV,layer,model_df)
+            batch_size,_,_ = past_data.size()
+            past_data = past_data.to(args.device)
+            label = label.float()
+            label = label.to(args.device)
+            label = label.item()
+            trg.append(label)
+            hidden = (torch.zeros(args.num_layers,batch_size,args.hidden_size),torch.zeros(args.num_layers,batch_size,args.hidden_size))
+            hidden = tuple(tensor.to(args.device) for tensor in hidden)
+            tem_output, _hidden = model(past_data,hidden)
+            output = tem_output[:,-1,:]
+            output = output.squeeze()
+            print("prediction is {}".format(output))
+            if label == 0 and output < 0.5:
+                cor_prediction += 1
+            elif label == 1 and output >= 0.5:
+                cor_prediction += 1
+            else:
+                wrg_prediction += 1
+            if output < 0.5:
+                output = 0
+            else:
+                output = 1
+            prediction.append(output)
+        for i,item in enumerate(prediction):
+             if isinstance(item, torch.Tensor) and item.device.type == 'cuda':
+                 prediction[i] = item.cpu()
+        for i,item in enumerate(trg):
+             if isinstance(item, torch.Tensor) and item.device.type == 'cuda':
+                 trg[i] = item.cpu()
+        print("the final prediction is {}".format(cor_prediction/(cor_prediction + wrg_prediction)))
+        main_path = "/data/jiayiwang/Neonate_Pain_Assessment/Testing_BiliearCNNLSTM/saved/reduceV/v8/"
+        pre_save = main_path + '{0}_prediction.png'.format(modality)
+        prediction_values = pd.DataFrame({'target':trg,'prediction':prediction})
+        pre_save = main_path + '/' + modality + '-' + fold + '-' + 'prediction.csv'
+        prediction_values.to_csv(pre_save)
+        recall = recall_score(trg, prediction)
+        f1 = f1_score(trg, prediction)
+        print("recall = {}".format(recall))
+        print("f1 = {}".format(f1))
+
+
 def main():
 
     modality = 'body' # face, body
@@ -376,8 +456,8 @@ def main():
         frames_per_segment = frames_per_segment,
         imagefile_template = 'videoframe_{:05d}.jpg',
         transform = preprocess_vd_test, # same to test processing
-        random_shift = False,
-        test_mode = True
+        random_shift = train,
+        test_mode = -train
     )
 
     #################
@@ -451,7 +531,7 @@ def main():
         "output_size": 512, ## output dimension setting
         "num_layers": 2,     ## number of LSTM layer
         "learning_rate" : 0.1, ## learning rate setting
-        "max_iter" :10, ## max iteration setting
+        "max_iter" :30, ## max iteration setting
     })
 
 
@@ -467,7 +547,7 @@ def main():
     if train:
         model = run(args, model, dataloader_vd_train, dataloader_vd_valid, model_df, optimizer, layer, fold, modality,scheduler,criterion)
     else:
-        model_path = videos_root_post +'/saved/reduceV/best-model/'+ fold + '-' + modality +'-resnet18-best-model-epoch-000-loss-0.32.pth'
-        test(model_path, model, optimizer, args, dataloader_vd_test, layer,model_df,modality,fold,type)
+        model_path = videos_root_post +'/saved/reduceV/v3/best-model/'+ fold + '-' + modality +'-resnet18-best-model-epoch-009-loss-0.25.pth'
+        test(model_path, model, optimizer, args, dataloader_vd_test, layer,model_df,modality,fold)
 if __name__ == '__main__':
     main()
